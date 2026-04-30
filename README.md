@@ -1,132 +1,128 @@
 # dynamic-wrapping
 
-Rust macros for monomorphized blanket implementations of dynamic traits.
+Proc macros for libraries that expose large collections through dynamic traits.
 
-Create object-safe dynamic entry points that transfer control into concrete implementations. Your custom blanket implementations get monomorphized per concrete type—dynamic dispatch where you want it, static dispatch where you need it.
+These macros allow library authors to keep internal implementations private while giving clients the ability to:
+- Choose their own container type (`Box`, `Rc`, `Arc`, custom handles)
+- Add performance-critical operations that get monomorphized per concrete type
+- Move dynamic dispatch to the outer boundary, keeping hot loops optimized
 
-## Overview
+## The Problem
 
-This crate lets library authors expose internal trait implementations while giving clients control over:
-- Container type (`Box`, `Rc`, `Arc`, custom handles)
-- Performance-critical code paths through monomorphized blanket implementations
-- Where dynamic dispatch happens (boundary) vs. where it doesn't (hot loops)
+Many libraries select concrete implementations at runtime based on configuration or data characteristics, but only expose a trait to users. Clients want to add performance-critical operations, but doing so through `dyn Trait` means paying for dynamic dispatch on every call—even inside hot loops.
 
-## Usage
+```rust
+// Library exposes only the trait
+pub trait ItemCollection {
+    fn get_value(&self, key: u32) -> u32;
+}
+
+// Client wants to add batch operations, but this is slow:
+fn batch_lookup(collection: &dyn ItemCollection, keys: &[u32]) -> Vec<u32> {
+    keys.iter().map(|k| collection.get_value(*k)).collect()
+    // ^ vtable lookup on every iteration!
+}
+```
+
+## The Solution
+
+This crate provides a factory pattern where the library selects a concrete type at runtime and passes it to the client's wrapper. Clients can then implement blanket traits that get monomorphized for each concrete type—moving dynamic dispatch to the outer boundary, not the hot loop.
+
+## Library Usage
+
+Mark your trait as wrappable and provide a default wrapper:
 
 ```rust
 use dynamic_wrapping::{wrappable, wrapping};
 
-// 1. Mark your trait as wrappable
 #[wrappable]
 pub trait ItemCollection {
-    fn len(&self) -> u32;
     fn get_value(&self, key: u32) -> u32;
+    fn get_message(&self) -> &str;
 }
 
-// 2. Define a wrapper that produces your preferred container type
 #[wrapping(
     ItemCollection => Box<dyn ItemCollection + 'a>, Box::new
 )]
 pub struct BoxDynWrapping;
 ```
 
-The macros generate:
-- `ItemCollectionWrapper<'a>` trait with `type Wrapped` and `fn wrap<C: ItemCollection + 'a>(c: C) -> Self::Wrapped`
-- Implementation of `ItemCollectionWrapper<'a>` for `BoxDynWrapping` that wraps in `Box<dyn ItemCollection + 'a>`
-
-Your library can then expose:
+Expose a factory method that lets clients choose the wrapper:
 
 ```rust
-pub struct CollectionStorage<'a> { /* ... */ }
+pub struct CollectionStorage<'a> {
+    code: u8,  // Runtime selector
+    name: &'a str,
+}
 
 impl<'a> CollectionStorage<'a> {
-    // Default: returns Box<dyn ItemCollection>
-    pub fn open_collection(&self) -> <BoxDynWrapping as ItemCollectionWrapper<'a>>::Wrapped {
-        self.open_collection_with::<BoxDynWrapping>()
+    // Default path: returns Box<dyn ItemCollection>
+    pub fn open(&self) -> <BoxDynWrapping as ItemCollectionWrapper<'a>>::Wrapped {
+        self.open_with::<BoxDynWrapping>()
     }
 
-    // Generic: client chooses the wrapper
-    pub fn open_collection_with<W>(&self) -> W::Wrapped
+    // Generic path: client chooses the wrapper
+    pub fn open_with<W>(self) -> W::Wrapped
     where
         W: ItemCollectionWrapper<'a>,
     {
-        // Match on runtime value to select concrete type
         match self.code {
-            0 => W::wrap(DummyCollection1 { /* ... */ }),
-            1 => W::wrap(DummyCollection2 { /* ... */ }),
-            _ => W::wrap(DummyCollection3 { /* ... */ }),
+            0 => W::wrap(ConcreteCollection1 { message: self.name }),
+            1 => W::wrap(ConcreteCollection2 { message: self.name }),
+            _ => W::wrap(ConcreteCollection3 { message: self.name }),
         }
     }
 }
 ```
-
-## Why Monomorphization Matters
-
-In Rust, calling methods through `dyn Trait` (dynamic dispatch) has overhead:
-- Virtual table lookup on every call
-- Prevents inlining across the trait boundary
-- Blocks many compiler optimizations
-
-This pattern moves the dynamic dispatch to the **outer boundary** (where you call `batch_lookup`), while the **inner critical path** (the loop inside `batch_lookup`) uses static dispatch with full optimization:
-
-```rust
-// This blanket impl gets compiled separately for EACH concrete type:
-// - DummyCollection1::batch_lookup  (fully optimized for DummyCollection1)
-// - DummyCollection2::batch_lookup  (fully optimized for DummyCollection2)
-// - DummyCollection3::batch_lookup  (fully optimized for DummyCollection3)
-impl<C: ItemCollection> MySpecialization for C {
-    fn batch_lookup(&self, keys: &[u32], values: &mut [u32]) {
-        // Static dispatch: self.get_value is resolved at compile time
-        // for the specific concrete type C, not through a vtable
-        for (key, value) in keys.iter().zip(values.iter_mut()) {
-            *value = self.get_value(*key);  // inlined, optimized per type
-        }
-    }
-}
-```
-
-The result: you pay for dynamic dispatch once (the outer call to `batch_lookup`), not on every iteration of your hot loop.
 
 ## Client Usage
 
-Clients can then use their own wrapper with blanket implementations:
+Clients can implement their own wrapper with performance-critical operations:
 
 ```rust
 use std::rc::Rc;
 
-// Client's specialization trait
-trait MySpecialization: ItemCollection {
-    fn batch_lookup(&self, keys: &[u32], values: &mut [u32]);
+// Client adds a performance-critical operation
+trait ItemCollectionExt: ItemCollection {
+    fn batch_lookup(&self, keys: &[u32]) -> Vec<u32>;
 }
 
-// BLANKET IMPLEMENTATION - gets monomorphized per concrete type!
-impl<C: ItemCollection> MySpecialization for C {
-    fn batch_lookup(&self, keys: &[u32], values: &mut [u32]) {
-        // Hot loop is monomorphized!
-        for (key, value) in keys.iter().zip(values.iter_mut()) {
-            *value = self.get_value(*key);
-        }
+// Blanket implementation: monomorphized per concrete type
+impl<C: ItemCollection> ItemCollectionExt for C {
+    fn batch_lookup(&self, keys: &[u32]) -> Vec<u32> {
+        // Hot loop: self.get_value is resolved at compile time!
+        keys.iter().map(|k| self.get_value(*k)).collect()
     }
 }
 
 // Client's custom wrapper
-struct MySpecializationWrapper;
+struct MyWrapper;
 
-impl<'a> ItemCollectionWrapper<'a> for MySpecializationWrapper {
-    type Wrapped = Rc<dyn MySpecialization + 'a>;
+impl<'a> ItemCollectionWrapper<'a> for MyWrapper {
+    type Wrapped = Rc<dyn ItemCollectionExt + 'a>;
     fn wrap<C: ItemCollection + 'a>(c: C) -> Self::Wrapped {
         Rc::new(c)
     }
 }
 
 fn main() {
-    let storage = CollectionStorage::new(...);
-    let specialization = storage.open_collection_with::<MySpecializationWrapper>();
+    let storage = CollectionStorage::new(0, "example");
+    let collection = storage.open_with::<MyWrapper>();
     
-    // batch_lookup is monomorphized for the concrete collection type!
-    specialization.batch_lookup(&keys, &mut values);
+    // batch_lookup is monomorphized for the concrete collection type
+    let results = collection.batch_lookup(&[1, 2, 3, 4]);
 }
 ```
+
+## How It Works
+
+1. Library marks trait with `#[wrappable]` → generates `ItemCollectionWrapper<'a>` trait
+2. Library provides `#[wrapping(...)]` wrapper struct → implements the wrapper trait
+3. Library exposes `open_with<W>()` factory method
+4. Client implements their own wrapper and blanket traits
+5. Blanket impls get monomorphized per concrete type, avoiding vtable lookups in hot loops
+
+Dynamic dispatch happens once (when calling `batch_lookup`), not on every iteration inside it.
 
 ## License
 
