@@ -2,7 +2,7 @@
 
 Proc macros for libraries that expose large collections through dynamic traits.
 
-These macros allow library authors to keep internal implementations private while giving clients the ability to:
+These macros allow library authors to keep internal implementations private while giving users the ability to:
 - Choose their own container type (`Box`, `Rc`, `Arc`, custom handles)
 - Add performance-critical operations that get monomorphized per concrete type
 - Move dynamic dispatch to the outer boundary, keeping hot loops optimized
@@ -17,7 +17,7 @@ pub trait ItemCollection {
     fn get_value(&self, key: u32) -> u32;
 }
 
-// Client wants to add batch operations, but this is slow:
+// User wants to add batch operations, but this is slow:
 fn batch_lookup(collection: &dyn ItemCollection, keys: &[u32]) -> Vec<u32> {
     keys.iter().map(|k| collection.get_value(*k)).collect()
     // ^ vtable lookup on every iteration!
@@ -26,7 +26,7 @@ fn batch_lookup(collection: &dyn ItemCollection, keys: &[u32]) -> Vec<u32> {
 
 ## The Solution
 
-This crate provides a factory pattern where the library selects a concrete type at runtime and passes it to the client's wrapper. Clients can then implement blanket traits that get monomorphized for each concrete type—moving dynamic dispatch to the outer boundary, not the hot loop.
+This crate provides a factory pattern where the library selects a concrete type at runtime and passes it to the user's wrapper. Users can then implement blanket traits that get monomorphized for each concrete type—moving dynamic dispatch to the outer boundary, not the hot loop.
 
 ## Library Usage
 
@@ -75,14 +75,14 @@ impl<'a> CollectionStorage<'a> {
 }
 ```
 
-## Client Usage
+## User Usage
 
-Clients can implement their own wrapper with performance-critical operations:
+Users can implement their own wrapper with performance-critical operations:
 
 ```rust
 use std::rc::Rc;
 
-// Client adds a performance-critical operation
+// User adds a performance-critical operation
 trait ItemCollectionExt: ItemCollection {
     fn batch_lookup(&self, keys: &[u32]) -> Vec<u32>;
 }
@@ -95,7 +95,7 @@ impl<C: ItemCollection> ItemCollectionExt for C {
     }
 }
 
-// Client's custom wrapper
+// User's custom wrapper
 struct MyWrapper;
 
 impl<'a> ItemCollectionWrapper<'a> for MyWrapper {
