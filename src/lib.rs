@@ -97,6 +97,57 @@ use syn::parse::{Parse, ParseStream};
 ///
 /// // Generates: MyCustomWrapper<'a>
 /// ```
+///
+/// # Supertraits and Monomorphization
+///
+/// A key use case is enabling users to define supertraits with blanket implementations that get
+/// monomorphized per concrete type. This moves dynamic dispatch to the outer boundary while
+/// keeping hot loops optimized:
+///
+/// ```rust
+/// use dynamic_wrapping::wrappable;
+///
+/// #[wrappable]
+/// pub trait ItemCollection {
+///     fn get_value(&self, key: u32) -> u32;
+/// }
+///
+/// // User defines a supertrait with performance-critical operations
+/// trait ItemCollectionExt: ItemCollection {
+///     fn batch_lookup(&self, keys: &[u32]) -> Vec<u32>;
+/// }
+///
+/// // Blanket implementation: monomorphized for each concrete type
+/// impl<C: ItemCollection> ItemCollectionExt for C {
+///     fn batch_lookup(&self, keys: &[u32]) -> Vec<u32> {
+///         keys.iter().map(|k| self.get_value(*k)).collect()
+///         // ^ self.get_value is resolved at compile time for concrete C
+///     }
+/// }
+/// ```
+///
+/// Users then define a wrapper that wraps in the supertrait type instead of the base trait,
+/// allowing them to call the monomorphized methods:
+///
+/// ```rust
+/// use dynamic_wrapping::wrapping;
+/// use std::rc::Rc;
+///
+/// struct MyWrapper;
+///
+/// impl<'a> ItemCollectionWrapper<'a> for MyWrapper {
+///     type Wrapped = Rc<dyn ItemCollectionExt + 'a>;
+///     fn wrap<C: ItemCollection + 'a>(c: C) -> Self::Wrapped {
+///         Rc::new(c)
+///     }
+/// }
+///
+/// #[wrapping(ItemCollection => Rc<dyn ItemCollectionExt + 'a>, Rc::new)]
+/// pub struct MyWrapper;
+/// ```
+///
+/// The result: dynamic dispatch happens once (when calling `batch_lookup`), not on every
+/// iteration of the hot loop inside it.
 #[proc_macro_attribute]
 pub fn wrappable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let trait_def = parse_macro_input!(item as ItemTrait);
@@ -210,6 +261,45 @@ impl Parse for WrappingArgs {
 /// }
 ///
 /// #[wrapping(
+///
+/// # Supertraits and Monomorphization
+///
+/// A powerful pattern is wrapping in a supertrait type to enable monomorphized blanket
+/// implementations. Define a supertrait with performance-critical operations:
+///
+/// ```rust
+/// use dynamic_wrapping::{wrappable, wrapping};
+/// use std::rc::Rc;
+///
+/// #[wrappable]
+/// pub trait ItemCollection {
+///     fn get_value(&self, key: u32) -> u32;
+/// }
+///
+/// // Supertrait with batch operations
+/// trait ItemCollectionExt: ItemCollection {
+///     fn batch_lookup(&self, keys: &[u32]) -> Vec<u32>;
+/// }
+///
+/// // Blanket impl: monomorphized per concrete type
+/// impl<C: ItemCollection> ItemCollectionExt for C {
+///     fn batch_lookup(&self, keys: &[u32]) -> Vec<u32> {
+///         keys.iter().map(|k| self.get_value(*k)).collect()
+///     }
+/// }
+/// ```
+///
+/// Wrap in the supertrait type instead of the base trait:
+///
+/// ```rust
+/// #[wrapping(
+///     ItemCollection => Rc<dyn ItemCollectionExt + 'a>, Rc::new
+/// )]
+/// pub struct MyWrapper;
+/// ```
+///
+/// This enables users to call `batch_lookup` through the wrapped type, with the hot loop
+/// monomorphized for each concrete `ItemCollection` implementation.
 ///     ItemCollection => Box<dyn ItemCollection + 'a>, Box::new
 /// )]
 /// pub struct BoxDynWrapping;
