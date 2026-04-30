@@ -1,4 +1,4 @@
-//! Proc macros for libraries that expose large collections through dynamic traits.
+//! Proc macros for libraries that expose internal types through dynamic traits.
 //!
 //! These macros allow library authors to keep internal implementations private while giving users the ability to:
 //! - Choose their own container type (`Box`, `Rc`, `Arc`, custom handles)
