@@ -1,3 +1,49 @@
+//! Proc macros for libraries that expose large collections through dynamic traits.
+//!
+//! These macros allow library authors to keep internal implementations private while giving users the ability to:
+//! - Choose their own container type (`Box`, `Rc`, `Arc`, custom handles)
+//! - Add performance-critical operations that get monomorphized per concrete type
+//! - Move dynamic dispatch to the outer boundary, keeping hot loops optimized
+//!
+//! ## Quick Start
+//!
+//! Mark your trait with `#[wrappable]` to generate a wrapper trait:
+//!
+//! ```
+//! use dynamic_wrapping::wrappable;
+//!
+//! #[wrappable]
+//! pub trait ItemCollection {
+//!     fn get_value(&self, key: u32) -> u32;
+//! }
+//! ```
+//!
+//! Define a wrapper that produces your preferred container type using `#[wrapping]`:
+//!
+//! ```
+//! use dynamic_wrapping::wrapping;
+//!
+//! #[wrapping(
+//!     ItemCollection => Box<dyn ItemCollection + 'a>, Box::new
+//! )]
+//! pub struct BoxDynWrapping;
+//! ```
+//!
+//! ## How It Works
+//!
+//! 1. Library marks trait with `#[wrappable]` → generates `{TraitName}Wrapper<'a>` trait
+//! 2. Library provides `#[wrapping(...)]` wrapper struct → implements the wrapper trait
+//! 3. Library exposes generic factory methods that accept any wrapper
+//! 4. Users implement their own wrapper and blanket traits
+//! 5. Blanket impls get monomorphized per concrete type, avoiding vtable lookups in hot loops
+//!
+//! ## See Also
+//!
+//! - [`wrappable`] - Attribute macro to make a trait wrappable
+//! - [`wrapping`] - Attribute macro to implement wrapper traits
+//!
+//! For detailed examples and usage patterns, see the [README](https://github.com/thomasraskthomsen/dynamic-wrapping).
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, ItemTrait, Token, Type, Expr};
