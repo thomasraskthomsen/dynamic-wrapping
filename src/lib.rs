@@ -46,7 +46,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, ItemTrait, Token, Type, Expr};
+use syn::{parse_macro_input, ItemTrait, Token, Type, Expr, GenericParam};
 use syn::parse::{Parse, ParseStream};
 
 /// Marks a trait as "wrappable" to generate a wrapper trait for it.
@@ -158,12 +158,36 @@ pub fn wrappable(attr: TokenStream, item: TokenStream) -> TokenStream {
         parse_macro_input!(attr as syn::Ident)
     };
 
+    // Collect the trait's own generic params (e.g. <X: FlexibleArray + ?Sized = dyn FlexibleArray>)
+    let trait_generics = &trait_def.generics;
+    let has_generics = !trait_generics.params.is_empty();
+
+    // Build the generic argument list for referring to the trait (without defaults), e.g. <X>
+    let trait_generic_args = if has_generics {
+        let args = trait_generics.params.iter().map(|p| match p {
+            GenericParam::Type(t) => { let id = &t.ident; quote! { #id } }
+            GenericParam::Lifetime(l) => { let lt = &l.lifetime; quote! { #lt } }
+            GenericParam::Const(c) => { let id = &c.ident; quote! { #id } }
+        });
+        quote! { <#(#args),*> }
+    } else {
+        quote! {}
+    };
+
+    // The wrapper trait also carries the trait's generic params (after 'a)
+    let wrapper_generics = if has_generics {
+        let params = &trait_generics.params;
+        quote! { <'a, #params> }
+    } else {
+        quote! { <'a> }
+    };
+
     let output = quote! {
         #trait_def
 
-        pub trait #wrapper_name<'a> {
+        pub trait #wrapper_name #wrapper_generics {
             type Wrapped;
-            fn wrap<C: #trait_name + 'a>(c: C) -> Self::Wrapped;
+            fn wrap<C: #trait_name #trait_generic_args + 'a>(c: C) -> Self::Wrapped;
         }
     };
 
