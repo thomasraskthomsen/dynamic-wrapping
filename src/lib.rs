@@ -162,11 +162,18 @@ pub fn wrappable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let trait_generics = &trait_def.generics;
     let has_generics = !trait_generics.params.is_empty();
 
+    // Separate lifetime params from type/const params
+    let lifetime_params: Vec<_> = trait_generics.params.iter().filter_map(|p| {
+        if let GenericParam::Lifetime(l) = p { Some(l) } else { None }
+    }).collect();
+    let has_lifetime_params = !lifetime_params.is_empty();
+
     // Build the generic argument list for referring to the trait (without defaults), e.g. <X>
+    // For lifetime params, substitute 'a (or use HRTB below)
     let trait_generic_args = if has_generics {
         let args = trait_generics.params.iter().map(|p| match p {
             GenericParam::Type(t) => { let id = &t.ident; quote! { #id } }
-            GenericParam::Lifetime(l) => { let lt = &l.lifetime; quote! { #lt } }
+            GenericParam::Lifetime(_) => quote! { 'a },
             GenericParam::Const(c) => { let id = &c.ident; quote! { #id } }
         });
         quote! { <#(#args),*> }
@@ -174,7 +181,7 @@ pub fn wrappable(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
-    // The wrapper trait also carries the trait's generic params (after 'a)
+    // The wrapper trait carries all the trait's generic params (after 'a)
     let wrapper_generics = if has_generics {
         let params = &trait_generics.params;
         quote! { <'a, #params> }
@@ -182,12 +189,26 @@ pub fn wrappable(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! { <'a> }
     };
 
+    // For the wrap bound: if the trait has lifetime params, use HRTB for<'lt> C: Trait<'lt, ...>
+    // so that C works for any lifetime, not just 'a
+    let wrap_bound = if has_lifetime_params {
+        // Build args replacing lifetime params with the HRTB lifetime 'lt
+        let hrtb_args = trait_generics.params.iter().map(|p| match p {
+            GenericParam::Type(t) => { let id = &t.ident; quote! { #id } }
+            GenericParam::Lifetime(_) => quote! { '__lt },
+            GenericParam::Const(c) => { let id = &c.ident; quote! { #id } }
+        });
+        quote! { for<'__lt> #trait_name<#(#hrtb_args),*> }
+    } else {
+        quote! { #trait_name #trait_generic_args }
+    };
+
     let output = quote! {
         #trait_def
 
         pub trait #wrapper_name #wrapper_generics {
             type Wrapped;
-            fn wrap<C: #trait_name #trait_generic_args + 'a>(c: C) -> Self::Wrapped;
+            fn wrap<C: #wrap_bound + 'a>(c: C) -> Self::Wrapped;
         }
     };
 
